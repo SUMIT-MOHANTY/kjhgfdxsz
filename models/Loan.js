@@ -23,16 +23,15 @@ const loanSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  status: {
-    type: String,
-    enum: ['active', 'returned', 'overdue'],
-    default: 'active'
+  isReturned: {
+    type: Boolean,
+    default: false
   },
   fineAmount: {
     type: Number,
     default: 0
   },
-  finePaid: {
+  isPaid: {
     type: Boolean,
     default: false
   },
@@ -41,48 +40,42 @@ const loanSchema = new mongoose.Schema({
     default: 0,
     max: 2
   },
-  notificationsSent: {
-    type: Number,
-    default: 0
+  status: {
+    type: String,
+    enum: ['active', 'returned', 'overdue'],
+    default: 'active'
   }
 }, {
   timestamps: true
 });
 
 loanSchema.methods.calculateFine = function() {
-  if (this.returnDate || this.status === 'returned') return this.fineAmount;
+  if (this.isReturned || !this.dueDate) return 0;
   
-  const now = new Date();
-  if (now <= this.dueDate) return 0;
+  const currentDate = new Date();
+  const dueDate = new Date(this.dueDate);
   
-  const overdueDays = Math.ceil((now - this.dueDate) / (1000 * 60 * 60 * 24));
+  if (currentDate <= dueDate) return 0;
+  
+  const overdueDays = Math.ceil((currentDate - dueDate) / (1000 * 60 * 60 * 24));
   const finePerDay = 0.50; // $0.50 per day
-  this.fineAmount = overdueDays * finePerDay;
-  this.status = 'overdue';
   
-  return this.fineAmount;
+  return overdueDays * finePerDay;
 };
 
 loanSchema.methods.isOverdue = function() {
-  return !this.returnDate && new Date() > this.dueDate;
+  if (this.isReturned) return false;
+  return new Date() > new Date(this.dueDate);
 };
 
-loanSchema.methods.canRenew = function() {
-  return this.renewalCount < 2 && !this.isOverdue() && this.status === 'active';
-};
-
-loanSchema.statics.getActiveLoansForUser = function(userId) {
-  return this.find({ user: userId, status: { $in: ['active', 'overdue'] } })
-    .populate('book', 'title author isbn')
-    .sort({ dueDate: 1 });
-};
-
-loanSchema.statics.getOverdueLoans = function() {
-  return this.find({
-    status: { $in: ['active', 'overdue'] },
-    dueDate: { $lt: new Date() },
-    returnDate: null
-  }).populate('user', 'name email').populate('book', 'title author');
-};
+loanSchema.pre('save', function(next) {
+  if (!this.isReturned) {
+    this.fineAmount = this.calculateFine();
+    this.status = this.isOverdue() ? 'overdue' : 'active';
+  } else {
+    this.status = 'returned';
+  }
+  next();
+});
 
 module.exports = mongoose.model('Loan', loanSchema);

@@ -1,274 +1,274 @@
 const Loan = require('../models/Loan');
 const Book = require('../models/Book');
 const User = require('../models/User');
-const { validationResult } = require('express-validator');
-const NotificationService = require('../services/notificationService');
+const { sendOverdueNotification } = require('../services/notificationService');
 
 class LoanController {
   // Borrow a book
-  static async borrowBook(req, res) {
+  async borrowBook(req, res) {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
-      const { bookId } = req.body;
-      const userId = req.user.id;
-
+      const { bookId, userId } = req.body;
+      
       // Check if book exists and is available
       const book = await Book.findById(bookId);
       if (!book) {
-        return res.status(404).json({ message: 'Book not found' });
+        return res.status(404).json({ error: 'Book not found' });
       }
-
+      
       if (book.availableCopies <= 0) {
-        return res.status(400).json({ message: 'Book is not available for borrowing' });
+        return res.status(400).json({ error: 'Book is not available for borrowing' });
       }
-
+      
+      // Check if user exists
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
       // Check if user already has this book borrowed
       const existingLoan = await Loan.findOne({
         user: userId,
         book: bookId,
-        status: { $in: ['active', 'overdue'] }
+        isReturned: false
       });
-
+      
       if (existingLoan) {
-        return res.status(400).json({ message: 'You have already borrowed this book' });
+        return res.status(400).json({ error: 'User already has this book borrowed' });
       }
-
+      
       // Check user's borrowing limit (max 5 books)
-      const activeLoansCount = await Loan.countDocuments({
+      const activeLoans = await Loan.countDocuments({
         user: userId,
-        status: { $in: ['active', 'overdue'] }
+        isReturned: false
       });
-
-      if (activeLoansCount >= 5) {
-        return res.status(400).json({ message: 'Borrowing limit reached (5 books maximum)' });
+      
+      if (activeLoans >= 5) {
+        return res.status(400).json({ error: 'User has reached maximum borrowing limit' });
       }
-
-      // Calculate due date (14 days from now)
+      
+      // Calculate due date (14 days from borrow date)
       const dueDate = new Date();
       dueDate.setDate(dueDate.getDate() + 14);
-
+      
       // Create loan record
       const loan = new Loan({
         user: userId,
         book: bookId,
         dueDate: dueDate
       });
-
+      
       await loan.save();
-
-      // Update book availability
+      
+      // Update book available copies
       book.availableCopies -= 1;
       await book.save();
-
-      const populatedLoan = await Loan.findById(loan._id)
-        .populate('book', 'title author isbn')
-        .populate('user', 'name email');
-
+      
+      // Populate loan data for response
+      await loan.populate(['user', 'book']);
+      
       res.status(201).json({
         message: 'Book borrowed successfully',
-        loan: populatedLoan
+        loan: loan
       });
+      
     } catch (error) {
-      console.error('Error borrowing book:', error);
-      res.status(500).json({ message: 'Internal server error' });
+      res.status(500).json({ error: error.message });
     }
   }
-
+  
   // Return a book
-  static async returnBook(req, res) {
+  async returnBook(req, res) {
     try {
       const { loanId } = req.params;
-      const userId = req.user.id;
-
-      const loan = await Loan.findOne({
-        _id: loanId,
-        user: userId,
-        status: { $in: ['active', 'overdue'] }
-      }).populate('book');
-
+      
+      const loan = await Loan.findById(loanId).populate(['user', 'book']);
       if (!loan) {
-        return res.status(404).json({ message: 'Active loan not found' });
+        return res.status(404).json({ error: 'Loan record not found' });
       }
-
+      
+      if (loan.isReturned) {
+        return res.status(400).json({ error: 'Book already returned' });
+      }
+      
       // Calculate final fine
-      const fine = loan.calculateFine();
+      const fineAmount = loan.calculateFine();
       
       // Update loan record
       loan.returnDate = new Date();
+      loan.isReturned = true;
+      loan.fineAmount = fineAmount;
       loan.status = 'returned';
-      loan.fineAmount = fine;
+      
       await loan.save();
-
-      // Update book availability
+      
+      // Update book available copies
       const book = await Book.findById(loan.book._id);
       book.availableCopies += 1;
       await book.save();
-
+      
       res.json({
         message: 'Book returned successfully',
         loan: loan,
-        fine: fine > 0 ? `Fine amount: $${fine.toFixed(2)}` : 'No fine applicable'
+        fineAmount: fineAmount
       });
+      
     } catch (error) {
-      console.error('Error returning book:', error);
-      res.status(500).json({ message: 'Internal server error' });
+      res.status(500).json({ error: error.message });
     }
   }
-
-  // Renew a loan
-  static async renewLoan(req, res) {
-    try {
-      const { loanId } = req.params;
-      const userId = req.user.id;
-
-      const loan = await Loan.findOne({
-        _id: loanId,
-        user: userId,
-        status: 'active'
-      });
-
-      if (!loan) {
-        return res.status(404).json({ message: 'Active loan not found' });
-      }
-
-      if (!loan.canRenew()) {
-        return res.status(400).json({ 
-          message: 'Cannot renew: maximum renewals reached or book is overdue' 
-        });
-      }
-
-      // Extend due date by 14 days
-      loan.dueDate.setDate(loan.dueDate.getDate() + 14);
-      loan.renewalCount += 1;
-      await loan.save();
-
-      res.json({
-        message: 'Loan renewed successfully',
-        newDueDate: loan.dueDate,
-        renewalsRemaining: 2 - loan.renewalCount
-      });
-    } catch (error) {
-      console.error('Error renewing loan:', error);
-      res.status(500).json({ message: 'Internal server error' });
-    }
-  }
-
+  
   // Get user's borrowing history
-  static async getBorrowingHistory(req, res) {
+  async getUserHistory(req, res) {
     try {
-      const userId = req.user.id;
-      const page = parseInt(req.query.page) || 1;
-      const limit = parseInt(req.query.limit) || 10;
-      const status = req.query.status;
-
+      const { userId } = req.params;
+      const { page = 1, limit = 10, status } = req.query;
+      
       const query = { user: userId };
       if (status) {
         query.status = status;
       }
-
+      
       const loans = await Loan.find(query)
         .populate('book', 'title author isbn')
         .sort({ borrowDate: -1 })
         .limit(limit * 1)
         .skip((page - 1) * limit);
-
+      
       const total = await Loan.countDocuments(query);
-
-      // Calculate current fines for active loans
-      const loansWithFines = loans.map(loan => {
-        const loanObj = loan.toObject();
-        if (loan.status === 'active' || loan.status === 'overdue') {
-          loanObj.currentFine = loan.calculateFine();
-        }
-        return loanObj;
-      });
-
+      
       res.json({
-        loans: loansWithFines,
-        currentPage: page,
+        loans,
         totalPages: Math.ceil(total / limit),
-        totalLoans: total
+        currentPage: page,
+        total
       });
+      
     } catch (error) {
-      console.error('Error fetching borrowing history:', error);
-      res.status(500).json({ message: 'Internal server error' });
+      res.status(500).json({ error: error.message });
     }
   }
-
-  // Get current active loans
-  static async getActiveLoans(req, res) {
+  
+  // Get active loans for a user
+  async getActiveLoans(req, res) {
     try {
-      const userId = req.user.id;
+      const { userId } = req.params;
       
-      const loans = await Loan.getActiveLoansForUser(userId);
+      const loans = await Loan.find({
+        user: userId,
+        isReturned: false
+      })
+      .populate('book', 'title author isbn')
+      .sort({ dueDate: 1 });
       
-      const loansWithFines = loans.map(loan => {
-        const loanObj = loan.toObject();
-        loanObj.currentFine = loan.calculateFine();
-        loanObj.isOverdue = loan.isOverdue();
-        loanObj.canRenew = loan.canRenew();
-        return loanObj;
+      // Update fine amounts for overdue books
+      const updatedLoans = loans.map(loan => {
+        if (loan.isOverdue()) {
+          loan.fineAmount = loan.calculateFine();
+        }
+        return loan;
       });
-
-      res.json({ loans: loansWithFines });
+      
+      res.json({ loans: updatedLoans });
+      
     } catch (error) {
-      console.error('Error fetching active loans:', error);
-      res.status(500).json({ message: 'Internal server error' });
+      res.status(500).json({ error: error.message });
     }
   }
-
-  // Admin: Get all overdue loans
-  static async getOverdueLoans(req, res) {
-    try {
-      const overdueLoans = await Loan.getOverdueLoans();
-      
-      const loansWithFines = overdueLoans.map(loan => {
-        const loanObj = loan.toObject();
-        loanObj.currentFine = loan.calculateFine();
-        return loanObj;
-      });
-
-      res.json({ overdueLoans: loansWithFines });
-    } catch (error) {
-      console.error('Error fetching overdue loans:', error);
-      res.status(500).json({ message: 'Internal server error' });
-    }
-  }
-
-  // Pay fine
-  static async payFine(req, res) {
+  
+  // Renew a loan
+  async renewLoan(req, res) {
     try {
       const { loanId } = req.params;
-      const userId = req.user.id;
-
-      const loan = await Loan.findOne({
-        _id: loanId,
-        user: userId
-      });
-
+      
+      const loan = await Loan.findById(loanId).populate(['user', 'book']);
       if (!loan) {
-        return res.status(404).json({ message: 'Loan not found' });
+        return res.status(404).json({ error: 'Loan record not found' });
       }
-
-      if (loan.fineAmount <= 0) {
-        return res.status(400).json({ message: 'No fine to pay' });
+      
+      if (loan.isReturned) {
+        return res.status(400).json({ error: 'Cannot renew returned book' });
       }
-
-      loan.finePaid = true;
+      
+      if (loan.renewalCount >= 2) {
+        return res.status(400).json({ error: 'Maximum renewals reached' });
+      }
+      
+      if (loan.fineAmount > 0 && !loan.isPaid) {
+        return res.status(400).json({ error: 'Please pay outstanding fines before renewal' });
+      }
+      
+      // Extend due date by 14 days
+      const newDueDate = new Date(loan.dueDate);
+      newDueDate.setDate(newDueDate.getDate() + 14);
+      
+      loan.dueDate = newDueDate;
+      loan.renewalCount += 1;
+      loan.status = 'active';
+      
       await loan.save();
-
+      
       res.json({
-        message: `Fine of $${loan.fineAmount.toFixed(2)} paid successfully`
+        message: 'Loan renewed successfully',
+        loan: loan
       });
+      
     } catch (error) {
-      console.error('Error paying fine:', error);
-      res.status(500).json({ message: 'Internal server error' });
+      res.status(500).json({ error: error.message });
+    }
+  }
+  
+  // Get overdue loans
+  async getOverdueLoans(req, res) {
+    try {
+      const overdueLoans = await Loan.find({
+        isReturned: false,
+        dueDate: { $lt: new Date() }
+      })
+      .populate(['user', 'book'])
+      .sort({ dueDate: 1 });
+      
+      // Update fine amounts
+      const updatedLoans = overdueLoans.map(loan => {
+        loan.fineAmount = loan.calculateFine();
+        loan.status = 'overdue';
+        return loan;
+      });
+      
+      res.json({ overdueLoans: updatedLoans });
+      
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+  
+  // Pay fine
+  async payFine(req, res) {
+    try {
+      const { loanId } = req.params;
+      const { paymentMethod = 'cash' } = req.body;
+      
+      const loan = await Loan.findById(loanId).populate(['user', 'book']);
+      if (!loan) {
+        return res.status(404).json({ error: 'Loan record not found' });
+      }
+      
+      if (loan.fineAmount <= 0) {
+        return res.status(400).json({ error: 'No outstanding fine' });
+      }
+      
+      loan.isPaid = true;
+      await loan.save();
+      
+      res.json({
+        message: 'Fine paid successfully',
+        paidAmount: loan.fineAmount,
+        paymentMethod: paymentMethod
+      });
+      
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
   }
 }
 
-module.exports = LoanController;
+module.exports = new LoanController();

@@ -4,127 +4,101 @@ const Loan = require('../models/Loan');
 class NotificationService {
   constructor() {
     this.transporter = nodemailer.createTransporter({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: process.env.SMTP_PORT || 587,
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
       secure: false,
       auth: {
         user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
+        pass: process.env.SMTP_PASSWORD
       }
     });
   }
-
-  async sendDueDateReminder(loan) {
-    try {
-      const mailOptions = {
-        from: process.env.FROM_EMAIL || 'library@example.com',
-        to: loan.user.email,
-        subject: 'Library Book Due Date Reminder',
-        html: `
-          <h2>Book Due Date Reminder</h2>
-          <p>Dear ${loan.user.name},</p>
-          <p>This is a reminder that the following book is due soon:</p>
-          <ul>
-            <li><strong>Title:</strong> ${loan.book.title}</li>
-            <li><strong>Author:</strong> ${loan.book.author}</li>
-            <li><strong>Due Date:</strong> ${loan.dueDate.toLocaleDateString()}</li>
-          </ul>
-          <p>Please return the book by the due date to avoid late fees.</p>
-          <p>You can renew the book online if you need more time (up to 2 renewals).</p>
-          <p>Thank you!</p>
-        `
-      };
-
-      await this.transporter.sendMail(mailOptions);
-      console.log(`Due date reminder sent to ${loan.user.email}`);
-    } catch (error) {
-      console.error('Error sending due date reminder:', error);
-    }
-  }
-
+  
   async sendOverdueNotification(loan) {
     try {
-      const fine = loan.calculateFine();
+      const overdueDays = Math.ceil(
+        (new Date() - new Date(loan.dueDate)) / (1000 * 60 * 60 * 24)
+      );
       
       const mailOptions = {
-        from: process.env.FROM_EMAIL || 'library@example.com',
+        from: process.env.SMTP_FROM,
         to: loan.user.email,
-        subject: 'Library Book Overdue Notice',
+        subject: 'Overdue Book Reminder - Library Management System',
         html: `
-          <h2>Overdue Book Notice</h2>
+          <h3>Book Overdue Notice</h3>
           <p>Dear ${loan.user.name},</p>
-          <p>The following book is now overdue:</p>
+          <p>This is a reminder that the following book is overdue:</p>
           <ul>
             <li><strong>Title:</strong> ${loan.book.title}</li>
             <li><strong>Author:</strong> ${loan.book.author}</li>
-            <li><strong>Due Date:</strong> ${loan.dueDate.toLocaleDateString()}</li>
-            <li><strong>Current Fine:</strong> $${fine.toFixed(2)}</li>
+            <li><strong>Due Date:</strong> ${loan.dueDate.toDateString()}</li>
+            <li><strong>Days Overdue:</strong> ${overdueDays}</li>
+            <li><strong>Fine Amount:</strong> $${loan.calculateFine().toFixed(2)}</li>
           </ul>
-          <p>Please return the book as soon as possible to minimize additional fees.</p>
-          <p>Late fees are $0.50 per day.</p>
-          <p>Thank you!</p>
+          <p>Please return the book as soon as possible to avoid additional fines.</p>
+          <p>Thank you,<br/>Library Management Team</p>
         `
       };
-
+      
       await this.transporter.sendMail(mailOptions);
-      loan.notificationsSent += 1;
-      await loan.save();
-      
       console.log(`Overdue notification sent to ${loan.user.email}`);
-    } catch (error) {
-      console.error('Error sending overdue notification:', error);
-    }
-  }
-
-  async sendDueDateReminders() {
-    try {
-      // Send reminders 3 days before due date
-      const reminderDate = new Date();
-      reminderDate.setDate(reminderDate.getDate() + 3);
       
-      const upcomingDueLoans = await Loan.find({
-        status: 'active',
-        dueDate: {
-          $gte: new Date(reminderDate.getFullYear(), reminderDate.getMonth(), reminderDate.getDate()),
-          $lt: new Date(reminderDate.getFullYear(), reminderDate.getMonth(), reminderDate.getDate() + 1)
-        },
-        notificationsSent: 0
-      }).populate('user', 'name email').populate('book', 'title author');
-
-      for (const loan of upcomingDueLoans) {
-        await this.sendDueDateReminder(loan);
-        loan.notificationsSent = 1;
-        await loan.save();
-      }
-
-      console.log(`Sent ${upcomingDueLoans.length} due date reminders`);
     } catch (error) {
-      console.error('Error sending due date reminders:', error);
+      console.error('Failed to send overdue notification:', error.message);
     }
   }
-
-  async sendOverdueNotifications() {
+  
+  async sendDueSoonNotification(loan) {
     try {
-      const overdueLoans = await Loan.find({
-        status: { $in: ['active', 'overdue'] },
-        dueDate: { $lt: new Date() },
-        returnDate: null,
-        notificationsSent: { $lt: 5 } // Max 5 notifications
-      }).populate('user', 'name email').populate('book', 'title author');
-
-      for (const loan of overdueLoans) {
-        // Send notifications every 7 days
-        const daysSinceLastNotification = loan.notificationsSent === 0 ? 999 : 
-          Math.floor((new Date() - loan.updatedAt) / (1000 * 60 * 60 * 24));
+      const daysUntilDue = Math.ceil(
+        (new Date(loan.dueDate) - new Date()) / (1000 * 60 * 60 * 24)
+      );
+      
+      if (daysUntilDue <= 2 && daysUntilDue > 0) {
+        const mailOptions = {
+          from: process.env.SMTP_FROM,
+          to: loan.user.email,
+          subject: 'Book Due Soon - Library Management System',
+          html: `
+            <h3>Book Due Soon Reminder</h3>
+            <p>Dear ${loan.user.name},</p>
+            <p>This is a reminder that the following book is due soon:</p>
+            <ul>
+              <li><strong>Title:</strong> ${loan.book.title}</li>
+              <li><strong>Author:</strong> ${loan.book.author}</li>
+              <li><strong>Due Date:</strong> ${loan.dueDate.toDateString()}</li>
+              <li><strong>Days Until Due:</strong> ${daysUntilDue}</li>
+            </ul>
+            <p>Please return the book by the due date or renew it if needed.</p>
+            <p>Thank you,<br/>Library Management Team</p>
+          `
+        };
         
-        if (daysSinceLastNotification >= 7) {
+        await this.transporter.sendMail(mailOptions);
+        console.log(`Due soon notification sent to ${loan.user.email}`);
+      }
+      
+    } catch (error) {
+      console.error('Failed to send due soon notification:', error.message);
+    }
+  }
+  
+  async checkAndSendNotifications() {
+    try {
+      // Get all active loans
+      const activeLoans = await Loan.find({ isReturned: false })
+        .populate(['user', 'book']);
+      
+      for (const loan of activeLoans) {
+        if (loan.isOverdue()) {
           await this.sendOverdueNotification(loan);
+        } else {
+          await this.sendDueSoonNotification(loan);
         }
       }
-
-      console.log(`Processed ${overdueLoans.length} overdue loans for notifications`);
+      
     } catch (error) {
-      console.error('Error sending overdue notifications:', error);
+      console.error('Failed to check and send notifications:', error.message);
     }
   }
 }
