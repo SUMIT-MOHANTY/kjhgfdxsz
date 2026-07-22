@@ -17,7 +17,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'apps.auth',
     'apps.books',
-    'apps.loans',
+    'apps.core',
 ]
 
 MIDDLEWARE = [
