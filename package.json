@@ -1,0 +1,37 @@
+{
+  "name": "book-catalog-api",
+  "version": "1.0.0",
+  "description": "Book Catalog Backend APIs for Library Management",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.0.3",
+    "cors": "^2.8.5",
+    "helmet": "^6.1.5",
+    "express-rate-limit": "^6.7.0",
+    "express-validator": "^6.15.0",
+    "jsonwebtoken": "^9.0.0",
+    "dotenv": "^16.0.3",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22",
+    "jest": "^29.5.0",
+    "supertest": "^6.3.3"
+  },
+  "keywords": [
+    "library",
+    "books",
+    "catalog",
+    "api",
+    "nodejs",
+    "mongodb"
+  ],
+  "author": "AI Agent",
+  "license": "MIT"
+}
